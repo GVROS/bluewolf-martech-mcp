@@ -22,29 +22,19 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-type StructuredValue = Record<string, unknown>;
-
-function toStructured(data: unknown): StructuredValue {
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    return data as StructuredValue;
-  }
-  return { data };
-}
-
 /**
- * Retorna o conteúdo em dois formatos:
- * - content: formato MCP padrão e compatível com clientes antigos;
- * - structuredContent: facilita clientes/agentes que preferem payload estruturado.
+ * Keep tool results deliberately conservative for maximum interoperability
+ * with IBM Consulting Advantage / ContextForge and older MCP clients.
  *
- * O cast evita conflito de tipagem entre versões do SDK sem alterar o payload real.
+ * `content` is the required MCP CallToolResult field. We intentionally do not
+ * emit structuredContent here because the ICA federation layer must first be
+ * stable on the baseline CallToolResult contract.
  */
 function success(data: unknown) {
   const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
   return {
-    isError: false,
     content: [{ type: "text" as const, text }],
-    structuredContent: toStructured(data),
-  } as any;
+  };
 }
 
 function failure(error: unknown) {
@@ -59,12 +49,20 @@ function failure(error: unknown) {
 
   return {
     isError: true,
-    content: [{ type: "text" as const, text: message }],
-    structuredContent: {
-      status: "error",
-      message,
-    },
-  } as any;
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          {
+            status: "error",
+            message,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
 }
 
 function settled<T>(result: PromiseSettledResult<T>) {
@@ -84,6 +82,31 @@ const handler = createMcpHandler(
   (server) => {
     /**
      * =============================================================
+     * CAMADA 0 — TESTE DE INTEROPERABILIDADE ICA <-> MCP
+     * =============================================================
+     */
+    server.registerTool(
+      "ica_echo",
+      {
+        title: "ICA MCP Echo",
+        description:
+          "Compatibility test for IBM Consulting Advantage. Returns exactly the content sent by the caller and does not access Salesforce.",
+        inputSchema: {
+          content: z.string().trim().min(1, "content is required"),
+        },
+      },
+      async ({ content }) =>
+        success({
+          status: "ok",
+          tool: "ica_echo",
+          content,
+          gateway: "bluewolf-martech-mcp",
+          serverTime: new Date().toISOString(),
+        }),
+    );
+
+    /**
+     * =============================================================
      * CAMADA 1 — CONECTIVIDADE E DIAGNÓSTICO
      * =============================================================
      */
@@ -95,22 +118,17 @@ const handler = createMcpHandler(
           "Tests connectivity between IBM Consulting Advantage and the Bluewolf MCP Gateway. Does not access Salesforce Marketing Cloud.",
         inputSchema: {},
       },
-      async () => {
-        try {
-          return success({
-            status: "ok",
-            gateway: "bluewolf-martech-mcp",
-            product: "Bluewolf MarTech Journey Factory",
-            message:
-              "IBM Consulting Advantage successfully reached the Bluewolf MCP Gateway.",
-            environment:
-              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-            serverTime: new Date().toISOString(),
-          });
-        } catch (error) {
-          return failure(error);
-        }
-      },
+      async () =>
+        success({
+          status: "ok",
+          gateway: "bluewolf-martech-mcp",
+          product: "Bluewolf MarTech Journey Factory",
+          message:
+            "IBM Consulting Advantage successfully reached the Bluewolf MCP Gateway.",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          serverTime: new Date().toISOString(),
+        }),
     );
 
     server.registerTool(
@@ -121,18 +139,13 @@ const handler = createMcpHandler(
           "Checks whether required Salesforce Marketing Cloud environment variables are configured. Never returns credential values.",
         inputSchema: {},
       },
-      async () => {
-        try {
-          return success({
-            status: "ok",
-            gateway: "bluewolf-martech-mcp",
-            configured: getConfigurationStatus(),
-            checkedAt: new Date().toISOString(),
-          });
-        } catch (error) {
-          return failure(error);
-        }
-      },
+      async () =>
+        success({
+          status: "ok",
+          gateway: "bluewolf-martech-mcp",
+          configured: getConfigurationStatus(),
+          checkedAt: new Date().toISOString(),
+        }),
     );
 
     server.registerTool(
@@ -527,10 +540,13 @@ const handler = createMcpHandler(
   {
     serverInfo: {
       name: "bluewolf-martech-mcp",
-      version: "0.3.0",
+      version: "0.4.0",
+    },
+    capabilities: {
+      tools: {},
     },
     instructions:
-      "End-to-end MarTech Journey Factory for IBM Consulting Advantage and Salesforce Marketing Cloud. Prefer read/context tools first. Never expose credentials. Never perform real SFMC writes unless the tool's explicit approval and dry-run gates are satisfied.",
+      "End-to-end MarTech Journey Factory for IBM Consulting Advantage and Salesforce Marketing Cloud. Prefer diagnostic and read/context tools first. Never expose credentials. Never perform real SFMC writes unless the tool's explicit approval and dry-run gates are satisfied.",
   },
   {
     basePath: "",
@@ -538,6 +554,41 @@ const handler = createMcpHandler(
     verboseLogs: true,
   },
 );
+
+function extractRequestId(request: Request): Promise<string | number | null> {
+  if (request.method !== "POST") return Promise.resolve(null);
+  return request
+    .json()
+    .then((body) => {
+      if (!body || typeof body !== "object") return null;
+      const id = (body as Record<string, unknown>).id;
+      return typeof id === "string" || typeof id === "number" ? id : null;
+    })
+    .catch(() => null);
+}
+
+async function protocolError(request: Request, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const id = await extractRequestId(request);
+
+  return Response.json(
+    {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: -32603,
+        message: "Internal MCP gateway error",
+        data: {
+          message,
+        },
+      },
+    },
+    {
+      status: 500,
+      headers: { "Cache-Control": "no-store" },
+    },
+  );
+}
 
 async function authorized(request: Request) {
   const expectedToken = process.env.MCP_GATEWAY_TOKEN?.trim();
@@ -594,24 +645,33 @@ async function authorized(request: Request) {
     );
   }
 
-  console.log(`[MCP] ${request.method} /mcp authorized`);
+  const errorRequest = request.clone();
+
+  console.log(
+    "[MCP REQUEST]",
+    JSON.stringify({
+      method: request.method,
+      protocolVersion: request.headers.get("mcp-protocol-version"),
+      hasSession: Boolean(request.headers.get("mcp-session-id")),
+      accept: request.headers.get("accept"),
+    }),
+  );
 
   try {
     const response = await handler(request);
-    console.log(`[MCP] ${request.method} /mcp -> ${response.status}`);
+    console.log(
+      "[MCP RESPONSE]",
+      JSON.stringify({
+        method: request.method,
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        hasSession: Boolean(response.headers.get("mcp-session-id")),
+      }),
+    );
     return response;
   } catch (error) {
     console.error("[MCP HANDLER ERROR]", error);
-    return Response.json(
-      {
-        error: "mcp_handler_error",
-        message: error instanceof Error ? error.message : String(error),
-      },
-      {
-        status: 500,
-        headers: { "Cache-Control": "no-store" },
-      },
-    );
+    return protocolError(errorRequest, error);
   }
 }
 
