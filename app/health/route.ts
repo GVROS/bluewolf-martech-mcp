@@ -11,9 +11,11 @@ export async function GET() {
     {
       status: "ok",
       service: "bluewolf-martech-mcp",
-      version: "0.4.0",
+      version: "0.5.0",
       product: "Bluewolf MarTech Journey Factory",
       transport: "MCP Streamable HTTP",
+      responseMode: "application/json",
+      compatibilityMode: "ICA stateless JSON",
       mcpEndpoint: "/mcp",
       toolCount: 15,
       sfmc: configured,
