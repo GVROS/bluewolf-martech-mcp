@@ -16,34 +16,45 @@ export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 /**
- * Padroniza respostas de sucesso para o MCP.
+ * =============================================================
+ * RESPOSTA MCP
  *
- * content:
- *   Compatibilidade padrão MCP.
+ * Mantemos o retorno propositalmente simples:
  *
- * structuredContent:
- *   Facilita consumo por clientes que trabalham melhor com
- *   respostas estruturadas, como agentes e gateways.
+ * {
+ *   content: [
+ *     {
+ *       type: "text",
+ *       text: "..."
+ *     }
+ *   ]
+ * }
+ *
+ * Não utilizamos structuredContent neste momento para maximizar
+ * a compatibilidade com o IBM Consulting Advantage.
+ * =============================================================
  */
 function success(data: unknown) {
-  const text = JSON.stringify(data, null, 2);
+  const text =
+    typeof data === "string"
+      ? data
+      : JSON.stringify(data, null, 2);
 
   return {
+    isError: false,
     content: [
       {
         type: "text" as const,
         text,
       },
     ],
-    structuredContent: {
-      success: true,
-      data,
-    },
   };
 }
 
 /**
- * Padroniza erros de Tool no formato MCP.
+ * =============================================================
+ * ERRO MCP
+ * =============================================================
  */
 function failure(error: unknown) {
   const message =
@@ -53,6 +64,8 @@ function failure(error: unknown) {
         ? error
         : JSON.stringify(error);
 
+  console.error("[MCP TOOL ERROR]", message);
+
   return {
     isError: true,
     content: [
@@ -61,25 +74,32 @@ function failure(error: unknown) {
         text: message,
       },
     ],
-    structuredContent: {
-      success: false,
-      error: message,
-    },
   };
 }
 
 /**
- * MCP Server
+ * =============================================================
+ * MCP SERVER
+ * =============================================================
  */
 const mcp = createMcpHandler(
   (server) => {
     /**
      * =========================================================
      * TOOL 1
-     * TESTE ICA -> VERCEL -> MCP
+     * MCP PING
      *
-     * NÃO acessa Salesforce.
-     * Serve para provar que o ICA consegue executar uma Tool.
+     * Não acessa Salesforce.
+     *
+     * Objetivo:
+     * provar:
+     *
+     * ICA
+     *   ->
+     * Vercel
+     *   ->
+     * MCP
+     *
      * =========================================================
      */
     server.registerTool(
@@ -87,7 +107,7 @@ const mcp = createMcpHandler(
       {
         title: "MCP Gateway Ping",
         description:
-          "Tests the connection between IBM Consulting Advantage and the Bluewolf MCP Gateway. Does not access Salesforce.",
+          "Tests connectivity between IBM Consulting Advantage and the Bluewolf MCP Gateway. Does not access Salesforce Marketing Cloud.",
         inputSchema: z.object({}),
       },
       async () => {
@@ -95,12 +115,13 @@ const mcp = createMcpHandler(
           return success({
             status: "ok",
             gateway: "bluewolf-martech-mcp",
-            message: "IBM Consulting Advantage successfully reached the MCP Gateway.",
-            serverTime: new Date().toISOString(),
+            message:
+              "IBM Consulting Advantage successfully reached the Bluewolf MCP Gateway.",
             environment:
               process.env.VERCEL_ENV ??
               process.env.NODE_ENV ??
               "unknown",
+            serverTime: new Date().toISOString(),
           });
         } catch (error) {
           return failure(error);
@@ -111,12 +132,16 @@ const mcp = createMcpHandler(
     /**
      * =========================================================
      * TOOL 2
-     * STATUS DAS VARIÁVEIS
+     * SFMC CONFIGURATION STATUS
      *
-     * NÃO retorna Client Secret,
-     * Client ID ou token.
+     * Não autentica no SFMC.
      *
-     * Retorna apenas se cada configuração existe.
+     * Apenas verifica se as variáveis obrigatórias existem.
+     *
+     * Nunca retorna:
+     * - Client Secret
+     * - Access Token
+     * - MCP Token
      * =========================================================
      */
     server.registerTool(
@@ -124,14 +149,18 @@ const mcp = createMcpHandler(
       {
         title: "SFMC Configuration Status",
         description:
-          "Checks whether the Salesforce Marketing Cloud environment variables required by the gateway are configured. Does not return secrets.",
+          "Checks whether the Salesforce Marketing Cloud environment variables required by the gateway are configured. Does not return credentials or secrets.",
         inputSchema: z.object({}),
       },
       async () => {
         try {
+          const configured =
+            getConfigurationStatus();
+
           return success({
+            status: "ok",
             gateway: "bluewolf-martech-mcp",
-            configured: getConfigurationStatus(),
+            configured,
             checkedAt: new Date().toISOString(),
           });
         } catch (error) {
@@ -143,9 +172,9 @@ const mcp = createMcpHandler(
     /**
      * =========================================================
      * TOOL 3
-     * HEALTH CHECK SFMC
+     * SFMC HEALTH
      *
-     * Aqui realmente solicita um Access Token no SFMC.
+     * Faz autenticação REAL Server-to-Server no Marketing Cloud.
      * =========================================================
      */
     server.registerTool(
@@ -153,31 +182,43 @@ const mcp = createMcpHandler(
       {
         title: "SFMC Health Check",
         description:
-          "Validates the Salesforce Marketing Cloud Server-to-Server configuration and authentication without returning credentials or secrets.",
+          "Validates Salesforce Marketing Cloud Server-to-Server authentication without returning credentials, secrets or access tokens.",
         inputSchema: z.object({}),
       },
       async () => {
         try {
-          const token = await getAccessToken();
+          const token =
+            await getAccessToken();
 
           return success({
             status: "ok",
-            gateway: "bluewolf-martech-mcp",
 
-            configured: getConfigurationStatus(),
+            gateway:
+              "bluewolf-martech-mcp",
+
+            configured:
+              getConfigurationStatus(),
 
             authentication: {
               authenticated: true,
-              tokenReceived: Boolean(token.access_token),
-              expiresIn: token.expires_in,
+
+              tokenReceived:
+                Boolean(token.access_token),
+
+              expiresIn:
+                token.expires_in ?? null,
             },
 
             endpoints: {
-              restInstanceUrl: token.rest_instance_url ?? null,
-              soapInstanceUrl: token.soap_instance_url ?? null,
+              restInstanceUrl:
+                token.rest_instance_url ?? null,
+
+              soapInstanceUrl:
+                token.soap_instance_url ?? null,
             },
 
-            checkedAt: new Date().toISOString(),
+            checkedAt:
+              new Date().toISOString(),
           });
         } catch (error) {
           return failure(error);
@@ -189,14 +230,18 @@ const mcp = createMcpHandler(
      * =========================================================
      * TOOL 4
      * LIST JOURNEYS
+     *
+     * READ ONLY
      * =========================================================
      */
     server.registerTool(
       "sfmc_list_journeys",
       {
         title: "List SFMC Journeys",
+
         description:
           "Read-only. Lists Journey Builder journeys available in Salesforce Marketing Cloud.",
+
         inputSchema: z.object({
           page: z
             .number()
@@ -212,9 +257,14 @@ const mcp = createMcpHandler(
             .default(20),
         }),
       },
+
       async ({ page, pageSize }) => {
         try {
-          const data = await listJourneys(page, pageSize);
+          const data =
+            await listJourneys(
+              page,
+              pageSize,
+            );
 
           return success(data);
         } catch (error) {
@@ -227,24 +277,33 @@ const mcp = createMcpHandler(
      * =========================================================
      * TOOL 5
      * GET JOURNEY
+     *
+     * READ ONLY
      * =========================================================
      */
     server.registerTool(
       "sfmc_get_journey",
       {
         title: "Get SFMC Journey",
+
         description:
           "Read-only. Retrieves one Journey Builder journey by ID.",
+
         inputSchema: z.object({
           id: z
             .string()
             .trim()
-            .min(1),
+            .min(
+              1,
+              "Journey ID is required",
+            ),
         }),
       },
+
       async ({ id }) => {
         try {
-          const data = await getJourney(id);
+          const data =
+            await getJourney(id);
 
           return success(data);
         } catch (error) {
@@ -257,14 +316,19 @@ const mcp = createMcpHandler(
      * =========================================================
      * TOOL 6
      * LIST DATA EXTENSIONS
+     *
+     * READ ONLY
      * =========================================================
      */
     server.registerTool(
       "sfmc_list_data_extensions",
       {
-        title: "List SFMC Data Extensions",
+        title:
+          "List SFMC Data Extensions",
+
         description:
           "Read-only. Lists Salesforce Marketing Cloud Data Extensions.",
+
         inputSchema: z.object({
           limit: z
             .number()
@@ -274,9 +338,13 @@ const mcp = createMcpHandler(
             .default(50),
         }),
       },
+
       async ({ limit }) => {
         try {
-          const data = await listDataExtensions(limit);
+          const data =
+            await listDataExtensions(
+              limit,
+            );
 
           return success(data);
         } catch (error) {
@@ -288,26 +356,37 @@ const mcp = createMcpHandler(
     /**
      * =========================================================
      * TOOL 7
-     * DATA EXTENSION FIELDS
+     * GET DATA EXTENSION FIELDS
+     *
+     * READ ONLY
      * =========================================================
      */
     server.registerTool(
       "sfmc_get_data_extension_fields",
       {
-        title: "Get SFMC Data Extension Fields",
+        title:
+          "Get SFMC Data Extension Fields",
+
         description:
-          "Read-only. Retrieves field metadata for a Data Extension using its Customer Key.",
+          "Read-only. Retrieves field metadata for a Salesforce Marketing Cloud Data Extension using its Customer Key.",
+
         inputSchema: z.object({
           customerKey: z
             .string()
             .trim()
-            .min(1),
+            .min(
+              1,
+              "Data Extension Customer Key is required",
+            ),
         }),
       },
+
       async ({ customerKey }) => {
         try {
           const data =
-            await getDataExtensionFields(customerKey);
+            await getDataExtensionFields(
+              customerKey,
+            );
 
           return success(data);
         } catch (error) {
@@ -320,14 +399,19 @@ const mcp = createMcpHandler(
      * =========================================================
      * TOOL 8
      * LIST AUTOMATIONS
+     *
+     * READ ONLY
      * =========================================================
      */
     server.registerTool(
       "sfmc_list_automations",
       {
-        title: "List SFMC Automations",
+        title:
+          "List SFMC Automations",
+
         description:
-          "Read-only. Lists Automation Studio automations from Salesforce Marketing Cloud.",
+          "Read-only. Lists Automation Studio automations available in Salesforce Marketing Cloud.",
+
         inputSchema: z.object({
           limit: z
             .number()
@@ -337,9 +421,13 @@ const mcp = createMcpHandler(
             .default(50),
         }),
       },
+
       async ({ limit }) => {
         try {
-          const data = await listAutomations(limit);
+          const data =
+            await listAutomations(
+              limit,
+            );
 
           return success(data);
         } catch (error) {
@@ -349,46 +437,80 @@ const mcp = createMcpHandler(
     );
   },
 
+  /**
+   * ===========================================================
+   * MCP SERVER CONFIGURATION
+   * ===========================================================
+   */
   {
     serverInfo: {
-      name: "bluewolf-martech-mcp",
-      version: "0.2.0",
+      name:
+        "bluewolf-martech-mcp",
+
+      version:
+        "0.3.0",
     },
 
     instructions: `
 Bluewolf MarTech MCP Gateway.
 
-Purpose:
+PURPOSE
 Connect IBM Consulting Advantage to Salesforce Marketing Cloud Engagement.
 
-Environment:
+CLIENT
+Programa CRM Salesforce SABESP.
+
+ENVIRONMENT
 Bluewolf Brazil POC.
 
-Security:
-Bearer Token authentication is required at the gateway.
+GATEWAY AUTHENTICATION
+Bearer Token.
 
-Salesforce authentication:
-Server-to-Server OAuth 2.0.
+SALESFORCE AUTHENTICATION
+OAuth 2.0 Server-to-Server.
 
-Current operating mode:
+CURRENT MODE
 READ ONLY.
 
-Available capabilities:
-- Test MCP connectivity
-- Validate SFMC configuration
-- Validate Salesforce authentication
-- List Journey Builder journeys
-- Retrieve a Journey
-- List Data Extensions
-- Retrieve Data Extension fields
-- List Automation Studio automations
+AVAILABLE TOOLS
 
-The gateway must never expose:
-- Client Secret
-- Salesforce access token
+1. mcp_ping
+Tests connectivity between IBM Consulting Advantage and the MCP Gateway.
+Does not access Salesforce.
+
+2. sfmc_configuration_status
+Checks whether required Salesforce Marketing Cloud environment variables exist.
+Does not expose their values.
+
+3. sfmc_health
+Authenticates with Salesforce Marketing Cloud using Server-to-Server OAuth.
+
+4. sfmc_list_journeys
+Lists Journey Builder journeys.
+
+5. sfmc_get_journey
+Retrieves one Journey Builder journey.
+
+6. sfmc_list_data_extensions
+Lists Data Extensions.
+
+7. sfmc_get_data_extension_fields
+Retrieves Data Extension field metadata.
+
+8. sfmc_list_automations
+Lists Automation Studio automations.
+
+SECURITY
+
+Never expose:
+- SFMC Client Secret
+- SFMC Access Token
 - MCP Gateway Token
+- passwords
 - credentials
 - private environment variable values
+
+The gateway is currently read-only.
 `.trim(),
 
     verboseLogs: true,
@@ -397,18 +519,24 @@ The gateway must never expose:
 
 /**
  * =============================================================
- * GATEWAY AUTHENTICATION
+ * ICA -> MCP GATEWAY AUTHENTICATION
  *
- * ICA envia:
+ * ICA deve enviar:
  *
- * Authorization: Bearer MCP_GATEWAY_TOKEN
+ * Authorization: Bearer <MCP_GATEWAY_TOKEN>
  *
- * O token precisa ser EXATAMENTE o mesmo configurado no Vercel.
+ * O mesmo token precisa existir no Vercel como:
+ *
+ * MCP_GATEWAY_TOKEN
  * =============================================================
  */
-async function authorized(request: Request) {
+async function authorized(
+  request: Request,
+) {
   const expectedToken =
-    process.env.MCP_GATEWAY_TOKEN?.trim();
+    process.env
+      .MCP_GATEWAY_TOKEN
+      ?.trim();
 
   /**
    * Token não configurado no Vercel.
@@ -420,34 +548,45 @@ async function authorized(request: Request) {
 
     return Response.json(
       {
-        error: "server_configuration_error",
+        error:
+          "server_configuration_error",
+
         message:
           "MCP_GATEWAY_TOKEN is not configured on the gateway.",
       },
       {
         status: 500,
+
         headers: {
-          "Cache-Control": "no-store",
+          "Cache-Control":
+            "no-store",
         },
       },
     );
   }
 
   /**
-   * Authorization recebido do ICA.
+   * Header recebido do ICA.
    */
   const authorization =
-    request.headers.get("authorization")?.trim() ?? "";
+    request.headers
+      .get("authorization")
+      ?.trim() ?? "";
 
   /**
-   * Aceita somente Bearer Token.
+   * Bearer Token.
    */
   const match =
-    authorization.match(/^Bearer\s+(.+)$/i);
+    authorization.match(
+      /^Bearer\s+(.+)$/i,
+    );
 
   const receivedToken =
     match?.[1]?.trim();
 
+  /**
+   * Token não enviado.
+   */
   if (!receivedToken) {
     console.warn(
       "[MCP AUTH] Bearer token was not received.",
@@ -455,76 +594,155 @@ async function authorized(request: Request) {
 
     return Response.json(
       {
-        error: "unauthorized",
+        error:
+          "unauthorized",
+
         message:
           "Bearer token is required.",
       },
       {
         status: 401,
+
         headers: {
-          "WWW-Authenticate": "Bearer",
-          "Cache-Control": "no-store",
+          "WWW-Authenticate":
+            "Bearer",
+
+          "Cache-Control":
+            "no-store",
         },
       },
     );
   }
 
   /**
-   * Valida token ICA -> Gateway.
+   * Token incorreto.
    */
-  if (receivedToken !== expectedToken) {
+  if (
+    receivedToken !==
+    expectedToken
+  ) {
     console.warn(
       "[MCP AUTH] Invalid MCP Gateway token.",
     );
 
     return Response.json(
       {
-        error: "unauthorized",
+        error:
+          "unauthorized",
+
         message:
           "Invalid MCP Gateway token.",
       },
       {
         status: 401,
+
         headers: {
-          "WWW-Authenticate": "Bearer",
-          "Cache-Control": "no-store",
+          "WWW-Authenticate":
+            "Bearer",
+
+          "Cache-Control":
+            "no-store",
         },
       },
     );
   }
 
   console.log(
-    `[MCP] ${request.method} request authorized`,
+    `[MCP] ${request.method} /mcp authorized`,
   );
 
   /**
-   * Entrega a requisição para o mcp-handler.
+   * Envia requisição ao MCP Handler.
    */
-  return mcp(request);
+  try {
+    const response =
+      await mcp(request);
+
+    console.log(
+      `[MCP] ${request.method} /mcp -> ${response.status}`,
+    );
+
+    return response;
+  } catch (error) {
+    console.error(
+      "[MCP HANDLER ERROR]",
+      error,
+    );
+
+    return Response.json(
+      {
+        error:
+          "mcp_handler_error",
+
+        message:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      },
+      {
+        status: 500,
+
+        headers: {
+          "Cache-Control":
+            "no-store",
+        },
+      },
+    );
+  }
 }
 
 /**
- * Alguns clientes/proxies podem fazer preflight.
+ * =============================================================
+ * CORS / PREFLIGHT
+ * =============================================================
  */
 async function options() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods":
-        "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers":
-        "Authorization, Content-Type, Accept, Mcp-Session-Id",
-      "Cache-Control": "no-store",
+  return new Response(
+    null,
+    {
+      status: 204,
+
+      headers: {
+        "Access-Control-Allow-Origin":
+          "*",
+
+        "Access-Control-Allow-Methods":
+          "GET, POST, DELETE, OPTIONS",
+
+        "Access-Control-Allow-Headers":
+          [
+            "Authorization",
+            "Content-Type",
+            "Accept",
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
+            "Last-Event-ID",
+          ].join(", "),
+
+        "Access-Control-Expose-Headers":
+          [
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
+          ].join(", "),
+
+        "Access-Control-Max-Age":
+          "86400",
+
+        "Cache-Control":
+          "no-store",
+      },
     },
-  });
+  );
 }
 
 /**
- * Next.js Route Handlers
+ * =============================================================
+ * NEXT.JS ROUTE HANDLERS
+ * =============================================================
  */
 export {
   authorized as GET,
   authorized as POST,
+  authorized as DELETE,
   options as OPTIONS,
 };
