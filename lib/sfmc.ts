@@ -40,7 +40,9 @@ function requiredBaseUri(name: string): string {
 function accountId(): number {
   const raw = requiredEnv("SFMC_ACCOUNT_ID");
   if (!/^\d+$/.test(raw)) {
-    throw new Error("SFMC_ACCOUNT_ID must contain only digits (the target Marketing Cloud MID). ");
+    throw new Error(
+      "SFMC_ACCOUNT_ID must contain only digits (the target Marketing Cloud MID).",
+    );
   }
 
   const parsed = Number(raw);
@@ -49,6 +51,12 @@ function accountId(): number {
   }
 
   return parsed;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
 }
 
 export function getConfigurationStatus() {
@@ -277,9 +285,9 @@ export async function createJourneyDraft(input: JourneyDraftInput) {
 
   if (!name) throw new Error("Journey name is required.");
   if (!key) throw new Error("Journey key is required.");
-  if (!/^[A-Za-z0-9_-]+$/.test(key)) {
+  if (!isUuid(key)) {
     throw new Error(
-      "Journey key can contain only letters, numbers, underscore and hyphen.",
+      "Journey key must be a UUID/GUID for POST /interaction/v1/interactions.",
     );
   }
 
