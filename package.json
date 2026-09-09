@@ -1,6 +1,6 @@
 {
   "name": "bluewolf-martech-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -8,13 +8,13 @@
     "start": "next start"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/sdk": "1.26.0",
     "fast-xml-parser": "^5.3.0",
-    "mcp-handler": "^2.1.0",
+    "mcp-handler": "1.1.0",
     "next": "^16.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "zod": "^4.4.3"
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
