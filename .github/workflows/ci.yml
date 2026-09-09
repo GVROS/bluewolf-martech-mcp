@@ -30,3 +30,29 @@ jobs:
 
       - name: Build application
         run: npm run build
+
+      - name: Start application for MCP smoke test
+        env:
+          MCP_GATEWAY_TOKEN: ci-test-token
+        run: |
+          npm start > /tmp/bluewolf-next.log 2>&1 &
+          echo $! > /tmp/bluewolf-next.pid
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/health > /tmp/bluewolf-health.json; then
+              cat /tmp/bluewolf-health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/bluewolf-next.log
+          exit 1
+
+      - name: Validate MCP contract
+        env:
+          MCP_GATEWAY_TOKEN: ci-test-token
+          MCP_SMOKE_URL: http://127.0.0.1:3000/mcp
+        run: node scripts/mcp-smoke.mjs
+
+      - name: Print application log on failure
+        if: failure()
+        run: cat /tmp/bluewolf-next.log || true
