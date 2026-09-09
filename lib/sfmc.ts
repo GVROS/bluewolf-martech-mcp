@@ -19,58 +19,110 @@ export type JourneyDraftInput = {
 
 let tokenCache: CachedToken | null = null;
 
-function required(name: string): string {
+function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
-  return value.replace(/\/$/, "");
+  return value;
+}
+
+function configured(name: string): boolean {
+  return Boolean(process.env[name]?.trim());
+}
+
+function normalizeBaseUri(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function requiredBaseUri(name: string): string {
+  return normalizeBaseUri(requiredEnv(name));
+}
+
+function accountId(): number {
+  const raw = requiredEnv("SFMC_ACCOUNT_ID");
+  if (!/^\d+$/.test(raw)) {
+    throw new Error("SFMC_ACCOUNT_ID must contain only digits (the target Marketing Cloud MID). ");
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error("SFMC_ACCOUNT_ID is not a valid positive Marketing Cloud MID.");
+  }
+
+  return parsed;
 }
 
 export function getConfigurationStatus() {
   return {
-    clientIdConfigured: Boolean(process.env.SFMC_CLIENT_ID),
-    clientSecretConfigured: Boolean(process.env.SFMC_CLIENT_SECRET),
-    accountIdConfigured: Boolean(process.env.SFMC_ACCOUNT_ID),
-    authBaseUriConfigured: Boolean(process.env.SFMC_AUTH_BASE_URI),
-    restBaseUriConfigured: Boolean(process.env.SFMC_REST_BASE_URI),
-    soapBaseUriConfigured: Boolean(process.env.SFMC_SOAP_BASE_URI),
-    gatewayTokenConfigured: Boolean(process.env.MCP_GATEWAY_TOKEN),
+    clientIdConfigured: configured("SFMC_CLIENT_ID"),
+    clientSecretConfigured: configured("SFMC_CLIENT_SECRET"),
+    accountIdConfigured: configured("SFMC_ACCOUNT_ID"),
+    authBaseUriConfigured: configured("SFMC_AUTH_BASE_URI"),
+    restBaseUriConfigured: configured("SFMC_REST_BASE_URI"),
+    soapBaseUriConfigured: configured("SFMC_SOAP_BASE_URI"),
+    gatewayTokenConfigured: configured("MCP_GATEWAY_TOKEN"),
   };
 }
 
 export async function getAccessToken(): Promise<CachedToken> {
-  if (tokenCache && tokenCache.expiresAt > Date.now() + 60_000) return tokenCache;
+  if (tokenCache && tokenCache.expiresAt > Date.now() + 60_000) {
+    return tokenCache;
+  }
 
-  const response = await fetch(`${required("SFMC_AUTH_BASE_URI")}/v2/token`, {
+  const response = await fetch(`${requiredBaseUri("SFMC_AUTH_BASE_URI")}/v2/token`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
     body: JSON.stringify({
       grant_type: "client_credentials",
-      client_id: required("SFMC_CLIENT_ID"),
-      client_secret: required("SFMC_CLIENT_SECRET"),
-      account_id: Number(required("SFMC_ACCOUNT_ID")),
+      client_id: requiredEnv("SFMC_CLIENT_ID"),
+      client_secret: requiredEnv("SFMC_CLIENT_SECRET"),
+      account_id: accountId(),
     }),
     cache: "no-store",
   });
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`SFMC token request failed (${response.status}): ${text.slice(0, 1000)}`);
+    throw new Error(
+      `SFMC token request failed (${response.status}). Response: ${text.slice(0, 800)}`,
+    );
   }
 
-  const token = JSON.parse(text) as TokenResponse;
+  let token: TokenResponse;
+  try {
+    token = JSON.parse(text) as TokenResponse;
+  } catch {
+    throw new Error("SFMC token endpoint returned a non-JSON response.");
+  }
+
+  if (!token.access_token) {
+    throw new Error("SFMC token endpoint returned success without access_token.");
+  }
+
+  if (!Number.isFinite(token.expires_in) || token.expires_in <= 0) {
+    throw new Error("SFMC token endpoint returned an invalid expires_in value.");
+  }
+
   tokenCache = {
     ...token,
     expiresAt: Date.now() + Math.max(60, token.expires_in - 90) * 1000,
   };
+
   return tokenCache;
 }
 
 function restBase(token: CachedToken): string {
-  return (token.rest_instance_url || required("SFMC_REST_BASE_URI")).replace(/\/$/, "");
+  return normalizeBaseUri(
+    token.rest_instance_url || requiredBaseUri("SFMC_REST_BASE_URI"),
+  );
 }
 
 function soapBase(token: CachedToken): string {
-  return (token.soap_instance_url || required("SFMC_SOAP_BASE_URI")).replace(/\/$/, "");
+  return normalizeBaseUri(
+    token.soap_instance_url || requiredBaseUri("SFMC_SOAP_BASE_URI"),
+  );
 }
 
 export async function sfmcRest(path: string, init: RequestInit = {}) {
@@ -83,7 +135,8 @@ export async function sfmcRest(path: string, init: RequestInit = {}) {
     headers.set("content-type", "application/json; charset=UTF-8");
   }
 
-  const response = await fetch(`${restBase(token)}${path}`, {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const response = await fetch(`${restBase(token)}${normalizedPath}`, {
     ...init,
     headers,
     cache: "no-store",
@@ -92,7 +145,7 @@ export async function sfmcRest(path: string, init: RequestInit = {}) {
   const text = await response.text();
   if (!response.ok) {
     throw new Error(
-      `SFMC REST ${init.method ?? "GET"} ${path} failed (${response.status}): ${text.slice(0, 1500)}`,
+      `SFMC REST ${init.method ?? "GET"} ${normalizedPath} failed (${response.status}): ${text.slice(0, 1200)}`,
     );
   }
 
@@ -115,7 +168,7 @@ function xmlEscape(value: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
+    .replace(/\"/g, "&quot;")
     .replace(/'/g, "&apos;");
 }
 
@@ -124,10 +177,12 @@ function findKey(node: unknown, target: string): any {
   if (target in (node as Record<string, unknown>)) {
     return (node as Record<string, unknown>)[target];
   }
+
   for (const value of Object.values(node as Record<string, unknown>)) {
     const found = findKey(value, target);
     if (found !== undefined) return found;
   }
+
   return undefined;
 }
 
@@ -150,7 +205,7 @@ export async function soapRetrieve(
     <RetrieveRequestMsg xmlns="http://exacttarget.com/wsdl/partnerAPI">
       <RetrieveRequest>
         <ObjectType>${xmlEscape(objectType)}</ObjectType>
-        ${properties.map((p) => `<Properties>${xmlEscape(p)}</Properties>`).join("")}
+        ${properties.map((property) => `<Properties>${xmlEscape(property)}</Properties>`).join("")}
         ${filterXml}
       </RetrieveRequest>
     </RetrieveRequestMsg>
@@ -169,7 +224,9 @@ export async function soapRetrieve(
 
   const xml = await response.text();
   if (!response.ok) {
-    throw new Error(`SFMC SOAP retrieve ${objectType} failed (${response.status}): ${xml.slice(0, 1500)}`);
+    throw new Error(
+      `SFMC SOAP retrieve ${objectType} failed (${response.status}): ${xml.slice(0, 1200)}`,
+    );
   }
 
   const parser = new XMLParser({
@@ -178,19 +235,27 @@ export async function soapRetrieve(
     trimValues: true,
     parseTagValue: true,
   });
-  const parsed = parser.parse(xml);
 
+  const parsed = parser.parse(xml);
   const fault = findKey(parsed, "Fault");
   if (fault) {
-    throw new Error(`SFMC SOAP fault: ${JSON.stringify(fault).slice(0, 1500)}`);
+    throw new Error(`SFMC SOAP fault: ${JSON.stringify(fault).slice(0, 1200)}`);
   }
 
-  const msg = findKey(parsed, "RetrieveResponseMsg");
-  const raw = msg?.Results;
+  const message = findKey(parsed, "RetrieveResponseMsg");
+  const rawResults = message?.Results;
+  const results =
+    rawResults == null
+      ? []
+      : Array.isArray(rawResults)
+        ? rawResults
+        : [rawResults];
+
   return {
-    overallStatus: msg?.OverallStatus,
-    requestId: msg?.RequestID,
-    results: raw == null ? [] : Array.isArray(raw) ? raw : [raw],
+    overallStatus: message?.OverallStatus ?? null,
+    requestId: message?.RequestID ?? null,
+    hasMoreRows: Boolean(message?.HasMoreRows),
+    results,
   };
 }
 
@@ -201,7 +266,9 @@ export async function listJourneys(page = 1, pageSize = 20) {
 }
 
 export async function getJourney(id: string) {
-  return sfmcRest(`/interaction/v1/interactions/${encodeURIComponent(id)}`);
+  const normalized = id.trim();
+  if (!normalized) throw new Error("Journey ID is required.");
+  return sfmcRest(`/interaction/v1/interactions/${encodeURIComponent(normalized)}`);
 }
 
 export async function createJourneyDraft(input: JourneyDraftInput) {
@@ -211,7 +278,9 @@ export async function createJourneyDraft(input: JourneyDraftInput) {
   if (!name) throw new Error("Journey name is required.");
   if (!key) throw new Error("Journey key is required.");
   if (!/^[A-Za-z0-9_-]+$/.test(key)) {
-    throw new Error("Journey key can contain only letters, numbers, underscore and hyphen.");
+    throw new Error(
+      "Journey key can contain only letters, numbers, underscore and hyphen.",
+    );
   }
 
   return sfmcRest("/interaction/v1/interactions", {
@@ -242,6 +311,7 @@ export async function listDataExtensions(limit = 50) {
     "CreatedDate",
     "ModifiedDate",
   ]);
+
   return {
     ...data,
     results: data.results.slice(0, Math.min(200, Math.max(1, limit))),
@@ -249,6 +319,11 @@ export async function listDataExtensions(limit = 50) {
 }
 
 export async function getDataExtensionFields(customerKey: string) {
+  const normalized = customerKey.trim();
+  if (!normalized) {
+    throw new Error("Data Extension Customer Key is required.");
+  }
+
   return soapRetrieve(
     "DataExtensionField",
     [
@@ -261,22 +336,26 @@ export async function getDataExtensionFields(customerKey: string) {
       "Ordinal",
       "DefaultValue",
     ],
-    { property: "DataExtension.CustomerKey", value: customerKey },
+    {
+      property: "DataExtension.CustomerKey",
+      value: normalized,
+    },
   );
 }
 
 export async function listAutomations(limit = 50) {
   const data = await soapRetrieve("Automation", [
-    "ObjectID",
+    "ProgramID",
     "CustomerKey",
     "Name",
     "Description",
     "Status",
-    "AutomationType",
     "IsActive",
+    "ScheduledTime",
     "CreatedDate",
     "ModifiedDate",
   ]);
+
   return {
     ...data,
     results: data.results.slice(0, Math.min(200, Math.max(1, limit))),
