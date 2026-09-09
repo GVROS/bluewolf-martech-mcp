@@ -28,3 +28,6 @@ Configure in Vercel and never commit secrets:
 - Transport: `STREAMABLE HTTP`
 - Authentication Type: `Bearer Token`
 - MCP Server URL: `https://<project>.vercel.app/mcp`
+
+## Deployment
+The project is connected to Vercel through the `main` branch. Any commit to `main` can trigger a new production deployment when Git integration is enabled.
