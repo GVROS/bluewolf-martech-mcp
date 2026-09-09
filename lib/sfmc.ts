@@ -11,6 +11,12 @@ interface CachedToken extends TokenResponse {
   expiresAt: number;
 }
 
+export type JourneyDraftInput = {
+  name: string;
+  key: string;
+  description?: string;
+};
+
 let tokenCache: CachedToken | null = null;
 
 function required(name: string): string {
@@ -67,19 +73,34 @@ function soapBase(token: CachedToken): string {
   return (token.soap_instance_url || required("SFMC_SOAP_BASE_URI")).replace(/\/$/, "");
 }
 
-export async function sfmcRest(path: string) {
+export async function sfmcRest(path: string, init: RequestInit = {}) {
   const token = await getAccessToken();
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${token.access_token}`);
+  headers.set("accept", "application/json");
+
+  if (init.body && !headers.has("content-type")) {
+    headers.set("content-type", "application/json; charset=UTF-8");
+  }
+
   const response = await fetch(`${restBase(token)}${path}`, {
-    headers: {
-      authorization: `Bearer ${token.access_token}`,
-      accept: "application/json",
-    },
+    ...init,
+    headers,
     cache: "no-store",
   });
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`SFMC REST ${path} failed (${response.status}): ${text.slice(0, 1500)}`);
+    throw new Error(
+      `SFMC REST ${init.method ?? "GET"} ${path} failed (${response.status}): ${text.slice(0, 1500)}`,
+    );
+  }
+
+  if (!text) {
+    return {
+      ok: true,
+      status: response.status,
+    };
   }
 
   try {
@@ -181,6 +202,32 @@ export async function listJourneys(page = 1, pageSize = 20) {
 
 export async function getJourney(id: string) {
   return sfmcRest(`/interaction/v1/interactions/${encodeURIComponent(id)}`);
+}
+
+export async function createJourneyDraft(input: JourneyDraftInput) {
+  const name = input.name.trim();
+  const key = input.key.trim();
+
+  if (!name) throw new Error("Journey name is required.");
+  if (!key) throw new Error("Journey key is required.");
+  if (!/^[A-Za-z0-9_-]+$/.test(key)) {
+    throw new Error("Journey key can contain only letters, numbers, underscore and hyphen.");
+  }
+
+  return sfmcRest("/interaction/v1/interactions", {
+    method: "POST",
+    body: JSON.stringify({
+      key,
+      name,
+      description:
+        input.description?.trim() ||
+        "Draft created by IBM Consulting Advantage through Bluewolf MarTech MCP Gateway.",
+      workflowApiVersion: 1,
+      triggers: [],
+      goals: [],
+      activities: [],
+    }),
+  });
 }
 
 export async function listDataExtensions(limit = 50) {
