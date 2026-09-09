@@ -1,12 +1,15 @@
+import "./globals.css";
+
 export const metadata = {
-  title: "Bluewolf MarTech MCP Gateway",
-  description: "Read-only MCP gateway for Salesforce Marketing Cloud"
+  title: "Bluewolf MarTech Journey Factory",
+  description:
+    "End-to-end MarTech journey factory connecting IBM Consulting Advantage, Salesforce Marketing Cloud and Data Cloud governance.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="pt-BR">
-      <body style={{ fontFamily: "Arial, sans-serif", margin: 40 }}>{children}</body>
+      <body>{children}</body>
     </html>
   );
 }
