@@ -4,6 +4,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 const baseUrl = process.env.MCP_SMOKE_URL ?? "http://127.0.0.1:3000/mcp";
 const token = process.env.MCP_GATEWAY_TOKEN ?? "ci-test-token";
+const expectedGateway =
+  process.env.MCP_EXPECTED_GATEWAY ?? "bluewolf-martech-mcp";
+const expectedResponseMode = process.env.MCP_EXPECTED_RESPONSE_MODE ?? "json";
+const requireStructured = process.env.MCP_REQUIRE_STRUCTURED === "true";
 
 const transport = new StreamableHTTPClientTransport(new URL(baseUrl), {
   requestInit: {
@@ -32,6 +36,24 @@ function textFrom(result) {
   return first.text;
 }
 
+function structuredContentFrom(result) {
+  assert.equal(
+    typeof result.structuredContent,
+    "object",
+    "Tool result must contain structuredContent",
+  );
+  assert.notEqual(
+    result.structuredContent,
+    null,
+    "structuredContent must not be null",
+  );
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(result.structuredContent, "content"),
+    "structuredContent must expose a top-level content field",
+  );
+  return result.structuredContent.content;
+}
+
 try {
   await client.connect(transport);
 
@@ -58,6 +80,13 @@ try {
     "TESTE_ICA_BLUEWOLF_001",
     "ica_echo must return exactly the argument received",
   );
+  if (requireStructured) {
+    assert.equal(
+      structuredContentFrom(echo),
+      "TESTE_ICA_BLUEWOLF_001",
+      "ica_echo structuredContent must preserve the argument",
+    );
+  }
 
   const echoWithoutArgument = await client.callTool({
     name: "ica_echo",
@@ -68,6 +97,12 @@ try {
     "ICA_ECHO_ARGUMENT_NOT_RECEIVED",
     "ica_echo fallback must diagnose a missing argument without schema rejection",
   );
+  if (requireStructured) {
+    assert.equal(
+      structuredContentFrom(echoWithoutArgument),
+      "ICA_ECHO_ARGUMENT_NOT_RECEIVED",
+    );
+  }
 
   const ping = await client.callTool({
     name: "mcp_ping",
@@ -75,8 +110,13 @@ try {
   });
   const pingPayload = JSON.parse(textFrom(ping));
   assert.equal(pingPayload.status, "ok");
-  assert.equal(pingPayload.gateway, "bluewolf-martech-mcp");
-  assert.equal(pingPayload.responseMode, "json");
+  assert.equal(pingPayload.gateway, expectedGateway);
+  assert.equal(pingPayload.responseMode, expectedResponseMode);
+  if (requireStructured) {
+    const structuredPing = structuredContentFrom(ping);
+    assert.equal(structuredPing.status, "ok");
+    assert.equal(structuredPing.gateway, expectedGateway);
+  }
 
   const config = await client.callTool({
     name: "sfmc_configuration_status",
@@ -86,6 +126,11 @@ try {
   assert.equal(configPayload.status, "ok");
   assert.equal(typeof configPayload.configured, "object");
   assert.equal(configPayload.configured.gatewayTokenConfigured, true);
+  if (requireStructured) {
+    const structuredConfig = structuredContentFrom(config);
+    assert.equal(structuredConfig.status, "ok");
+    assert.equal(structuredConfig.configured.gatewayTokenConfigured, true);
+  }
 
   const dryRun = await client.callTool({
     name: "sfmc_create_journey_draft",
@@ -106,11 +151,19 @@ try {
     dryRunPayload.salesforceJourneyKey,
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   );
+  if (requireStructured) {
+    const structuredDryRun = structuredContentFrom(dryRun);
+    assert.equal(structuredDryRun.status, "dry_run");
+    assert.equal(structuredDryRun.writeExecuted, false);
+  }
 
   console.log(
     JSON.stringify(
       {
         status: "ok",
+        endpoint: baseUrl,
+        expectedGateway,
+        structuredOutputValidated: requireStructured,
         tests: [
           "tools/list",
           "ica_echo with content",

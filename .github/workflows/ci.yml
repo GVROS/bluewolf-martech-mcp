@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - fix/ica-compatibility-v06
   pull_request:
     branches:
       - main
@@ -31,7 +32,7 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Start application for MCP smoke test
+      - name: Start application for smoke tests
         env:
           MCP_GATEWAY_TOKEN: ci-test-token
         run: |
@@ -47,11 +48,28 @@ jobs:
           cat /tmp/bluewolf-next.log
           exit 1
 
-      - name: Validate MCP contract
+      - name: Validate primary MCP contract
         env:
           MCP_GATEWAY_TOKEN: ci-test-token
           MCP_SMOKE_URL: http://127.0.0.1:3000/mcp
+          MCP_EXPECTED_GATEWAY: bluewolf-martech-mcp
+          MCP_EXPECTED_RESPONSE_MODE: json
         run: node scripts/mcp-smoke.mjs
+
+      - name: Validate ICA compatibility MCP contract
+        env:
+          MCP_GATEWAY_TOKEN: ci-test-token
+          MCP_SMOKE_URL: http://127.0.0.1:3000/mcp-ica
+          MCP_EXPECTED_GATEWAY: bluewolf-martech-mcp-ica
+          MCP_EXPECTED_RESPONSE_MODE: json+structuredContent
+          MCP_REQUIRE_STRUCTURED: "true"
+        run: node scripts/mcp-smoke.mjs
+
+      - name: Validate direct SFMC API contract
+        env:
+          MCP_GATEWAY_TOKEN: ci-test-token
+          SFMC_API_SMOKE_URL: http://127.0.0.1:3000/api/sfmc
+        run: node scripts/rest-smoke.mjs
 
       - name: Print application log on failure
         if: failure()
