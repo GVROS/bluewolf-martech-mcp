@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "bluewolf-sfmc": {
+      "type": "streamable-http",
+      "url": "https://bluewolf-martech-mcp.vercel.app/mcp",
+      "headers": {
+        "Authorization": "Bearer REPLACE_WITH_LOCAL_MCP_GATEWAY_TOKEN"
+      },
+      "alwaysAllow": [
+        "mcp_ping",
+        "sfmc_configuration_status",
+        "sfmc_health",
+        "sfmc_list_journeys",
+        "sfmc_get_journey",
+        "sfmc_list_data_extensions",
+        "sfmc_get_data_extension_fields",
+        "sfmc_list_automations",
+        "martech_context_snapshot",
+        "martech_capabilities",
+        "martech_generate_blueprint",
+        "martech_validate_briefing",
+        "martech_data_cloud_readiness"
+      ],
+      "disabled": false
+    }
+  }
+}
